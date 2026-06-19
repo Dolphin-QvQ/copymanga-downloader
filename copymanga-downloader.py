@@ -217,52 +217,99 @@ def crawl_chapter_images(driver, chapter_info):
     # 平滑小步滚动逻辑
     last_img_count = -1
     loop_times = 0
-    max_loop = 20
-    min_scroll_times = 3
+    max_loop = 30
+    min_scroll_times = 5
+    scroll_pause_time = 0.8
+    img_list = []
+    time.sleep(2)
+    
     while loop_times < max_loop:
+        # 1. 逐步滚动到底部（每次滚动一屏，增加停留时间）
         driver.execute_script("window.scrollTo({top: 0, behavior: 'smooth'});")
-        random_delay(0.4, 0.6)
-        view_h = driver.execute_script("return window.innerHeight;")
-        for step in range(1, 5):
-            target_y = view_h * step
-            driver.execute_script(f"window.scrollTo({{top: {target_y}, behavior: 'smooth'}});")
-            random_delay(0.35, 0.55)
+        time.sleep(1)
+        
+        # 获取页面高度
+        total_height = driver.execute_script("return document.body.scrollHeight")
+        current_height = 0
+        view_height = driver.execute_script("return window.innerHeight")
+        
+        # 2. 分段滚动，覆盖整个页面
+        while current_height < total_height:
+            current_height += view_height
+            driver.execute_script(f"window.scrollTo({{top: {current_height}, behavior: 'smooth'}});")
+            time.sleep(scroll_pause_time)
+        
+        # 3. 最后滚动到底部并停留
         driver.execute_script("window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});")
-        random_delay(1.2, 1.8)
+        time.sleep(2)
+        
+        # 4. 收集图片元素
         img_elements = driver.find_elements(By.CSS_SELECTOR, "img[data-src],img[data-original]")
         curr_count = len(img_elements)
         logger.debug(f"第{loop_times+1}次完整平滑滚动，当前检测图片数量：{curr_count}")
+        
+        # 5. 检查退出条件
         exit_flag = False
+        # 达到标注页数则退出
         if total_page_num > 0 and curr_count >= total_page_num:
             logger.info(f"已抓取到标准总页数{total_page_num}张，停止滚动")
             exit_flag = True
+        # 连续5次无新增图片且超过最小滚动次数则退出
         if curr_count == last_img_count and loop_times >= min_scroll_times:
-            logger.debug(f"已完成最少{min_scroll_times}次滚动，无新增图片，停止滚动")
+            logger.debug(f"已完成最少{min_scroll_times}次滚动，连续无新增图片，停止滚动")
             exit_flag = True
+        # 图片数量超过标注页数的1.2倍（防止标注错误）
+        if total_page_num > 0 and curr_count >= total_page_num * 1.2:
+            logger.info(f"图片数量超过标注页数的120%，停止滚动")
+            exit_flag = True
+        
         if exit_flag:
             break
+        
         last_img_count = curr_count
         loop_times += 1
+        
     # 过滤有效图片
     img_url_set = set()
     for img in img_elements:
         try:
             src = img.get_attribute("data-src") or img.get_attribute("data-original")
-            if src and "loading" not in src and "ads" not in src:
+            if src and "loading" not in src.lower() and "ads" not in src.lower() and src.strip():
                 img_url_set.add(src)
         except StaleElementReferenceException:
             continue
     img_list = sorted(list(img_url_set))
     total_pic = len(img_list)
     logger.info(f"{chap_title} 共检测到 {total_pic} 张漫画图片（页面标注总页数：{total_page_num}）")
+    
+    # 如果仍未达到标注页数，尝试强制等待后再次抓取
+    if total_page_num > 0 and total_pic < total_page_num:
+        logger.warning(f"检测到的图片数量({total_pic})少于标注页数({total_page_num})，尝试最后一次强制加载")
+        time.sleep(5)
+        driver.execute_script("window.scrollTo({top: document.body.scrollHeight});")
+        time.sleep(3)
+        # 重新抓取图片
+        img_elements = driver.find_elements(By.CSS_SELECTOR, "img[data-src],img[data-original]")
+        for img in img_elements:
+            try:
+                src = img.get_attribute("data-src") or img.get_attribute("data-original")
+                if src and "loading" not in src.lower() and "ads" not in src.lower() and src.strip():
+                    img_url_set.add(src)
+            except:
+                continue
+        img_list = sorted(list(img_url_set))
+        total_pic = len(img_list)
+        logger.info(f"强制加载后，最终检测到 {total_pic} 张漫画图片")
+    
     # 批量下载图片
-    for _, img_link in enumerate(img_list):
+    for idx, img_link in enumerate(img_list):
         suffix = img_link.split(".")[-1] if "." in img_link else "webp"
-        save_name = f"{str(_+1).zfill(3)}.{suffix}"
+        save_name = f"{str(idx+1).zfill(3)}.{suffix}"
         save_full_path = os.path.join(chap_dir, save_name)
         download_single_image(img_link, save_full_path)
         random_delay(0.1, 0.5)
     return total_pic
+
 # ==================== 主程序 ====================
 def main():
     safe_mkdir(SAVE_ROOT)
